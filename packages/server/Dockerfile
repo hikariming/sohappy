@@ -18,7 +18,7 @@ RUN pnpm --filter @sohappy/server run build
 
 # Deploy server package to a clean directory
 # This extracts only the necessary files and production dependencies/node_modules for the server
-RUN pnpm --filter @sohappy/server deploy --prod /prod/server
+RUN pnpm --filter @sohappy/server deploy --legacy --prod /prod/server
 
 # Final production stage
 FROM base AS server
