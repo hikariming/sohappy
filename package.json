@@ -1,0 +1,17 @@
+{
+  "name": "sohappy",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "npm -w @sohappy/server run dev",
+    "dev:cli": "npm -w @sohappy/cli run dev",
+    "dev:web": "npm -w @sohappy/web-client run dev",
+    "build": "npm run build --workspaces"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

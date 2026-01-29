@@ -1,0 +1,22 @@
+{
+  "name": "@sohappy/server",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "fastify": "^4.24.3",
+    "socket.io": "^4.7.2",
+    "@fastify/cors": "^8.4.1",
+    "@fastify/static": "^6.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.6.0",
+    "typescript": "^5.3.3"
+  }
+}

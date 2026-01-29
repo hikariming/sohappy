@@ -1,0 +1,417 @@
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
+import { Server as SocketIO } from 'socket.io';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { existsSync } from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const PORT = parseInt(process.env.PORT ?? '3000', 10);
+const HOST = process.env.HOST ?? '0.0.0.0';
+
+// Control lock timeout (ms) - auto-release if no input for this duration
+const CONTROL_LOCK_TIMEOUT = 30000;
+
+interface OutputEvent {
+  type: 'output';
+  seq: number;
+  content: string;
+  timestamp: number;
+}
+
+interface EncryptedMessage {
+  nonce: string;
+  ciphertext: string;
+}
+
+interface EncryptedOutputEvent {
+  viewerId: string;
+  encrypted: EncryptedMessage;
+  seq: number;
+  timestamp: number;
+}
+
+interface Viewer {
+  socketId: string;
+  publicKey: string;
+  nickname?: string;
+}
+
+interface ControlLock {
+  holderId: string;
+  holderNickname?: string;
+  acquiredAt: number;
+  lastInputAt: number;
+}
+
+interface Session {
+  id: string;
+  cliSocketId: string | null;
+  cliPublicKey: string | null;
+  viewers: Map<string, Viewer>;
+  lastOutput: OutputEvent | null;
+  outputHistory: OutputEvent[];
+  encryptedHistory: EncryptedOutputEvent[];
+  encrypted: boolean;
+  controlLock: ControlLock | null;
+}
+
+// Session storage (in-memory for MVP)
+const sessions = new Map<string, Session>();
+
+function broadcastControlStatus(io: SocketIO, sessionId: string, session: Session): void {
+  const status = session.controlLock
+    ? {
+        locked: true,
+        holderId: session.controlLock.holderId,
+        holderNickname: session.controlLock.holderNickname,
+        acquiredAt: session.controlLock.acquiredAt,
+      }
+    : { locked: false };
+
+  io.to(`session:${sessionId}`).emit('control-status', status);
+}
+
+async function main(): Promise<void> {
+  const app = Fastify({ logger: true });
+
+  await app.register(cors, {
+    origin: true,
+    credentials: true,
+  });
+
+  const webClientPath = join(__dirname, '../../web-client/dist');
+  if (existsSync(webClientPath)) {
+    await app.register(fastifyStatic, {
+      root: webClientPath,
+      prefix: '/',
+    });
+  } else {
+    console.log('Web client static files not found, serving API only');
+  }
+
+  const io = new SocketIO(app.server, {
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST'],
+    },
+    pingTimeout: 45000,
+    pingInterval: 15000,
+  });
+
+  // API Routes
+  app.get('/api/health', async () => {
+    return { status: 'ok', timestamp: Date.now() };
+  });
+
+  app.get('/api/sessions', async () => {
+    return {
+      sessions: Array.from(sessions.entries()).map(([id, session]) => ({
+        id,
+        hasCliConnected: !!session.cliSocketId,
+        viewerCount: session.viewers.size,
+        lastOutputSeq: session.lastOutput?.seq ?? 0,
+        encrypted: session.encrypted,
+        controlLocked: !!session.controlLock,
+        controlHolder: session.controlLock?.holderNickname ?? null,
+      })),
+    };
+  });
+
+  app.get<{ Params: { sessionId: string } }>('/api/sessions/:sessionId', async (request) => {
+    const { sessionId } = request.params;
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return { error: 'Session not found' };
+    }
+    return {
+      id: session.id,
+      hasCliConnected: !!session.cliSocketId,
+      cliPublicKey: session.cliPublicKey,
+      encrypted: session.encrypted,
+      controlLock: session.controlLock
+        ? {
+            holderId: session.controlLock.holderId,
+            holderNickname: session.controlLock.holderNickname,
+            acquiredAt: session.controlLock.acquiredAt,
+          }
+        : null,
+    };
+  });
+
+  // Socket.IO connection handling
+  io.on('connection', (socket) => {
+    const sessionId = socket.handshake.query.sessionId as string;
+    const clientType = socket.handshake.query.clientType as 'cli' | 'viewer';
+    const publicKey = socket.handshake.query.publicKey as string | undefined;
+    const nickname = socket.handshake.query.nickname as string | undefined;
+
+    if (!sessionId) {
+      console.log('Connection rejected: no sessionId');
+      socket.disconnect(true);
+      return;
+    }
+
+    console.log(`Client connected: ${clientType} (${socket.id}) for session: ${sessionId}`);
+
+    let session = sessions.get(sessionId);
+    if (!session) {
+      session = {
+        id: sessionId,
+        cliSocketId: null,
+        cliPublicKey: null,
+        viewers: new Map(),
+        lastOutput: null,
+        outputHistory: [],
+        encryptedHistory: [],
+        encrypted: false,
+        controlLock: null,
+      };
+      sessions.set(sessionId, session);
+    }
+
+    socket.join(`session:${sessionId}`);
+
+    if (clientType === 'cli') {
+      if (session.cliSocketId) {
+        console.log(`Replacing existing CLI connection for session: ${sessionId}`);
+      }
+      session.cliSocketId = socket.id;
+      session.cliPublicKey = publicKey ?? null;
+      session.encrypted = !!publicKey;
+
+      io.to(`session:${sessionId}`).emit('cli-status', {
+        connected: true,
+        publicKey: session.cliPublicKey,
+        encrypted: session.encrypted,
+      });
+    } else {
+      const viewer: Viewer = {
+        socketId: socket.id,
+        publicKey: publicKey ?? '',
+        nickname: nickname,
+      };
+      session.viewers.set(socket.id, viewer);
+
+      if (session.encrypted && session.cliSocketId && publicKey) {
+        io.to(session.cliSocketId).emit('viewer-joined', {
+          viewerId: socket.id,
+          publicKey: publicKey,
+        });
+      }
+
+      if (!session.encrypted && session.lastOutput) {
+        socket.emit('output', session.lastOutput);
+      }
+
+      socket.emit('cli-status', {
+        connected: !!session.cliSocketId,
+        publicKey: session.cliPublicKey,
+        encrypted: session.encrypted,
+      });
+
+      // Send current control status to new viewer
+      broadcastControlStatus(io, sessionId, session);
+    }
+
+    // Handle control lock request
+    socket.on('request-control', () => {
+      if (clientType === 'cli') return;
+
+      const viewer = session!.viewers.get(socket.id);
+      if (!viewer) return;
+
+      // Check if lock is available or expired
+      const now = Date.now();
+      if (session!.controlLock) {
+        const timeSinceLastInput = now - session!.controlLock.lastInputAt;
+        if (timeSinceLastInput < CONTROL_LOCK_TIMEOUT && session!.controlLock.holderId !== socket.id) {
+          // Lock is held by someone else and not expired
+          socket.emit('control-denied', {
+            reason: 'locked',
+            holderId: session!.controlLock.holderId,
+            holderNickname: session!.controlLock.holderNickname,
+          });
+          return;
+        }
+      }
+
+      // Grant control
+      session!.controlLock = {
+        holderId: socket.id,
+        holderNickname: viewer.nickname,
+        acquiredAt: now,
+        lastInputAt: now,
+      };
+
+      console.log(`Control granted to ${socket.id} (${viewer.nickname ?? 'anonymous'})`);
+      broadcastControlStatus(io, sessionId, session!);
+    });
+
+    // Handle control release
+    socket.on('release-control', () => {
+      if (clientType === 'cli') return;
+
+      if (session!.controlLock?.holderId === socket.id) {
+        session!.controlLock = null;
+        console.log(`Control released by ${socket.id}`);
+        broadcastControlStatus(io, sessionId, session!);
+      }
+    });
+
+    // Handle unencrypted output from CLI
+    socket.on('output', (event: OutputEvent) => {
+      if (clientType !== 'cli') return;
+
+      session!.lastOutput = event;
+      session!.outputHistory.push(event);
+      if (session!.outputHistory.length > 100) {
+        session!.outputHistory.shift();
+      }
+
+      socket.to(`session:${sessionId}`).emit('output', event);
+    });
+
+    // Handle encrypted output from CLI
+    socket.on('encrypted-output', (data: EncryptedOutputEvent) => {
+      if (clientType !== 'cli') return;
+
+      io.to(data.viewerId).emit('encrypted-output', {
+        encrypted: data.encrypted,
+        seq: data.seq,
+        timestamp: data.timestamp,
+      });
+    });
+
+    // Handle encrypted output for history
+    socket.on('output-history', (data: { encrypted: EncryptedMessage; seq: number; timestamp: number }) => {
+      if (clientType !== 'cli') return;
+
+      session!.encryptedHistory.push({
+        viewerId: '',
+        encrypted: data.encrypted,
+        seq: data.seq,
+        timestamp: data.timestamp,
+      });
+      if (session!.encryptedHistory.length > 100) {
+        session!.encryptedHistory.shift();
+      }
+    });
+
+    // Handle unencrypted input from viewers
+    socket.on('input', (data: { keys: string; type: 'text' | 'special' }) => {
+      if (clientType === 'cli') return;
+
+      // Check control lock
+      if (session!.controlLock && session!.controlLock.holderId !== socket.id) {
+        const timeSinceLastInput = Date.now() - session!.controlLock.lastInputAt;
+        if (timeSinceLastInput < CONTROL_LOCK_TIMEOUT) {
+          socket.emit('input-rejected', { reason: 'not-controller' });
+          return;
+        }
+        // Lock expired, clear it
+        session!.controlLock = null;
+        broadcastControlStatus(io, sessionId, session!);
+      }
+
+      // Update last input time if this viewer has control
+      if (session!.controlLock?.holderId === socket.id) {
+        session!.controlLock.lastInputAt = Date.now();
+      }
+
+      if (session!.cliSocketId) {
+        io.to(session!.cliSocketId).emit('input', data);
+      } else {
+        socket.emit('error', { message: 'CLI not connected' });
+      }
+    });
+
+    // Handle encrypted input from viewers
+    socket.on('encrypted-input', (data: { encrypted: EncryptedMessage }) => {
+      if (clientType === 'cli') return;
+
+      // Check control lock
+      if (session!.controlLock && session!.controlLock.holderId !== socket.id) {
+        const timeSinceLastInput = Date.now() - session!.controlLock.lastInputAt;
+        if (timeSinceLastInput < CONTROL_LOCK_TIMEOUT) {
+          socket.emit('input-rejected', { reason: 'not-controller' });
+          return;
+        }
+        session!.controlLock = null;
+        broadcastControlStatus(io, sessionId, session!);
+      }
+
+      if (session!.controlLock?.holderId === socket.id) {
+        session!.controlLock.lastInputAt = Date.now();
+      }
+
+      if (session!.cliSocketId) {
+        io.to(session!.cliSocketId).emit('encrypted-input', {
+          viewerId: socket.id,
+          encrypted: data.encrypted,
+        });
+      } else {
+        socket.emit('error', { message: 'CLI not connected' });
+      }
+    });
+
+    // Handle get-history request
+    socket.on('get-history', () => {
+      if (session!.encrypted) {
+        socket.emit('encrypted-history', session!.encryptedHistory);
+      } else {
+        socket.emit('history', session!.outputHistory);
+      }
+    });
+
+    // Handle disconnect
+    socket.on('disconnect', () => {
+      console.log(`Client disconnected: ${clientType} (${socket.id})`);
+
+      if (clientType === 'cli' && session!.cliSocketId === socket.id) {
+        session!.cliSocketId = null;
+        session!.cliPublicKey = null;
+        io.to(`session:${sessionId}`).emit('cli-status', {
+          connected: false,
+          publicKey: null,
+          encrypted: session!.encrypted,
+        });
+      } else {
+        // Release control if this viewer held it
+        if (session!.controlLock?.holderId === socket.id) {
+          session!.controlLock = null;
+          broadcastControlStatus(io, sessionId, session!);
+        }
+
+        if (session!.cliSocketId) {
+          io.to(session!.cliSocketId).emit('viewer-left', {
+            viewerId: socket.id,
+          });
+        }
+        session!.viewers.delete(socket.id);
+      }
+
+      setTimeout(() => {
+        const s = sessions.get(sessionId);
+        if (s && !s.cliSocketId && s.viewers.size === 0) {
+          sessions.delete(sessionId);
+          console.log(`Cleaned up empty session: ${sessionId}`);
+        }
+      }, 60000);
+    });
+  });
+
+  try {
+    await app.listen({ port: PORT, host: HOST });
+    console.log(`\n🚀 sohappy server running at http://${HOST}:${PORT}`);
+    console.log(`   WebSocket ready for connections\n`);
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
+}
+
+main().catch(console.error);
