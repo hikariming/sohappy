@@ -26,6 +26,12 @@ interface CliStatus {
   encrypted?: boolean;
 }
 
+interface PairingCode {
+  sessionId: string;
+  publicKey: string;
+  timestamp: number;
+}
+
 interface ControlStatus {
   locked: boolean;
   holderId?: string;
@@ -33,14 +39,26 @@ interface ControlStatus {
   acquiredAt?: number;
 }
 
+const SERVER_URL = (import.meta as ImportMeta & { env?: { VITE_SERVER_URL?: string } }).env?.VITE_SERVER_URL
+  ?? `${window.location.protocol}//${window.location.hostname}:3010`;
+
 // DOM Elements
+const userSecretInput = document.getElementById('user-secret-input') as HTMLInputElement;
+const loginBtn = document.getElementById('login-btn') as HTMLButtonElement;
+const loginSection = document.getElementById('login-section') as HTMLDivElement;
+const sessionsList = document.getElementById('sessions-list') as HTMLDivElement;
+const sessionsContainer = document.getElementById('sessions-container') as HTMLDivElement;
+const logoutBtn = document.getElementById('logout-btn') as HTMLButtonElement;
+const sessionSelector = document.getElementById('session-selector') as HTMLDivElement;
 const sessionInput = document.getElementById('session-input') as HTMLInputElement;
 const nicknameInput = document.getElementById('nickname-input') as HTMLInputElement;
 const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
+const backBtn = document.getElementById('back-btn') as HTMLButtonElement;
 const inputField = document.getElementById('input-field') as HTMLInputElement;
 const terminalContainer = document.getElementById('terminal-container') as HTMLDivElement;
 const cliStatusEl = document.getElementById('cli-status') as HTMLSpanElement;
 const serverStatus = document.getElementById('server-status') as HTMLSpanElement;
+const pairingFingerprintEl = document.getElementById('pairing-fingerprint') as HTMLSpanElement;
 const seqCounter = document.getElementById('seq-counter') as HTMLSpanElement;
 const latencyDisplay = document.getElementById('latency') as HTMLSpanElement;
 const specialKeys = document.querySelectorAll('.key-btn');
@@ -60,9 +78,130 @@ let keyPair: KeyPair | null = null;
 let sharedSecret: Uint8Array | null = null;
 let isEncrypted = false;
 
+// Pairing state
+let pairingCode: PairingCode | null = null;
+let pairingFingerprint: string | null = null;
+
 // Control state
 let hasControl = false;
 let controlLocked = false;
+
+// User state
+let currentUserSecret: string | null = null;
+let currentUserId: string | null = null;
+
+interface SessionInfo {
+  id: string;
+  hasCliConnected: boolean;
+  viewerCount: number;
+  lastOutputSeq: number;
+  encrypted: boolean;
+  controlLocked: boolean;
+  controlHolder: string | null;
+  createdAt: number;
+}
+
+// Login and fetch user sessions
+async function login(userSecret: string): Promise<void> {
+  currentUserSecret = userSecret;
+
+  try {
+    const response = await fetch(`${SERVER_URL}/api/user/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userSecret }),
+    });
+
+    const data = await response.json();
+
+    if (data.error) {
+      alert(`Error: ${data.error}`);
+      return;
+    }
+
+    currentUserId = data.userId;
+    displaySessions(data.sessions);
+
+    // Hide login, show sessions list
+    loginSection.style.display = 'none';
+    sessionsList.style.display = 'block';
+  } catch (error) {
+    console.error('Login failed:', error);
+    alert('Failed to connect to server');
+  }
+}
+
+// Display user's sessions
+function displaySessions(sessions: SessionInfo[]): void {
+  sessionsContainer.innerHTML = '';
+
+  if (sessions.length === 0) {
+    sessionsContainer.innerHTML = '<p>No sessions found. Start a CLI session first.</p>';
+    return;
+  }
+
+  sessions.forEach((session) => {
+    const sessionEl = document.createElement('div');
+    sessionEl.className = 'session-item';
+    sessionEl.innerHTML = `
+      <div class="session-info">
+        <strong>${session.id}</strong>
+        <span class="${session.hasCliConnected ? 'connected' : 'disconnected'}">
+          ${session.hasCliConnected ? '🟢 Connected' : '🔴 Offline'}
+        </span>
+        <span>${session.encrypted ? '🔒 Encrypted' : '🔓 Unencrypted'}</span>
+        <span>Viewers: ${session.viewerCount}</span>
+        <span>Seq: ${session.lastOutputSeq}</span>
+      </div>
+      <button class="join-session-btn" data-session-id="${session.id}">Join</button>
+    `;
+    sessionsContainer.appendChild(sessionEl);
+  });
+
+  // Add event listeners to join buttons
+  document.querySelectorAll('.join-session-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const sessionId = (e.target as HTMLButtonElement).dataset.sessionId;
+      if (sessionId) {
+        selectSession(sessionId);
+      }
+    });
+  });
+}
+
+// Select a session to join
+function selectSession(sessionId: string): void {
+  pairingCode = null;
+  pairingFingerprint = null;
+  updatePairingStatus('Pairing: --');
+  sessionInput.value = sessionId;
+  sessionsList.style.display = 'none';
+  sessionSelector.style.display = 'block';
+}
+
+// Go back to sessions list
+function goBackToSessions(): void {
+  if (socket?.connected) {
+    socket.disconnect();
+  }
+  sessionSelector.style.display = 'none';
+  terminalContainer.style.display = 'none';
+  if (currentUserSecret) {
+    login(currentUserSecret);
+  }
+}
+
+// Logout
+function logout(): void {
+  if (socket?.connected) {
+    socket.disconnect();
+  }
+  currentUserSecret = null;
+  currentUserId = null;
+  sessionsList.style.display = 'none';
+  loginSection.style.display = 'block';
+  userSecretInput.value = '';
+}
 
 // Initialize terminal
 function initTerminal(): void {
@@ -136,12 +275,16 @@ function connect(sessionId: string, nickname?: string): void {
   hasControl = false;
   controlLocked = false;
 
-  socket = io({
+  // Show terminal container when connecting
+  terminalContainer.style.display = 'block';
+
+  socket = io(SERVER_URL, {
     query: {
       sessionId,
       clientType: 'viewer',
       publicKey: publicKeyToBase64(keyPair.publicKey),
       nickname: nickname || undefined,
+      userSecret: currentUserSecret || undefined,
     },
     transports: ['websocket'],
     reconnection: true,
@@ -184,6 +327,7 @@ function connect(sessionId: string, nickname?: string): void {
       isEncrypted = true;
       console.log('E2E encryption established');
       terminal?.writeln('\r\n🔒 E2E encryption enabled\r\n');
+      void verifyPairing(data.publicKey);
     } else if (data.connected) {
       terminal?.writeln('\r\n--- CLI connected (unencrypted) ---\r\n');
     } else {
@@ -322,6 +466,39 @@ function updateCliStatus(connected: boolean, encrypted: boolean): void {
   }
 }
 
+function updatePairingStatus(text: string, className?: string): void {
+  pairingFingerprintEl.textContent = text;
+  pairingFingerprintEl.className = className ? `status ${className}` : 'status';
+}
+
+async function fingerprintFromBase64(base64: string): Promise<string> {
+  try {
+    if (!window.crypto?.subtle) return 'unknown';
+    const bytes = publicKeyFromBase64(base64);
+    const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+    const hex = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return hex.slice(0, 12);
+  } catch {
+    return 'unknown';
+  }
+}
+
+async function verifyPairing(cliPublicKey: string): Promise<void> {
+  if (!pairingCode) return;
+  if (!pairingFingerprint) {
+    pairingFingerprint = await fingerprintFromBase64(pairingCode.publicKey);
+  }
+
+  const cliFingerprint = await fingerprintFromBase64(cliPublicKey);
+  if (pairingCode.publicKey === cliPublicKey) {
+    updatePairingStatus(`Pairing: verified (${cliFingerprint})`, 'connected');
+  } else {
+    updatePairingStatus(`Pairing: mismatch (${cliFingerprint})`, 'warning');
+  }
+}
+
 function updateControlStatus(data: ControlStatus): void {
   controlLocked = data.locked;
 
@@ -351,6 +528,29 @@ function updateControlStatus(data: ControlStatus): void {
 }
 
 // Event handlers
+loginBtn.addEventListener('click', () => {
+  const userSecret = userSecretInput.value.trim();
+  if (!userSecret) {
+    alert('Please enter your secret key');
+    return;
+  }
+  login(userSecret);
+});
+
+userSecretInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    loginBtn.click();
+  }
+});
+
+logoutBtn.addEventListener('click', () => {
+  logout();
+});
+
+backBtn.addEventListener('click', () => {
+  goBackToSessions();
+});
+
 connectBtn.addEventListener('click', () => {
   if (socket?.connected) {
     socket.disconnect();
@@ -421,10 +621,48 @@ releaseControlBtn.addEventListener('click', () => {
 // Initialize
 initTerminal();
 
-// Auto-connect if session in URL
+// Parse pairing/session from URL
 const urlParams = new URLSearchParams(window.location.search);
-const sessionFromUrl = urlParams.get('session');
-if (sessionFromUrl) {
-  sessionInput.value = sessionFromUrl;
-  connect(sessionFromUrl);
+const pairingParam = urlParams.get('pairing');
+const sessionParam = urlParams.get('session');
+
+if (pairingParam) {
+  try {
+    const parsed = JSON.parse(pairingParam) as PairingCode;
+    if (parsed.sessionId && parsed.publicKey && parsed.timestamp) {
+      pairingCode = parsed;
+      sessionInput.value = parsed.sessionId;
+      sessionSelector.style.display = 'block';
+      void fingerprintFromBase64(parsed.publicKey).then((fp) => {
+        pairingFingerprint = fp;
+        updatePairingStatus(`Pairing: loaded (${fp})`);
+      });
+    } else {
+      updatePairingStatus('Pairing: invalid', 'warning');
+    }
+  } catch {
+    updatePairingStatus('Pairing: invalid', 'warning');
+  }
+} else if (sessionParam) {
+  sessionInput.value = sessionParam;
+  sessionSelector.style.display = 'block';
 }
+
+// Hide terminal initially
+terminalContainer.style.display = 'none';
+
+// Check for stored userSecret (optional - for convenience)
+const storedSecret = localStorage.getItem('sohappy-user-secret');
+if (storedSecret) {
+  userSecretInput.value = storedSecret;
+}
+
+// Save userSecret on login (optional)
+const originalLogin = login;
+async function loginWithSave(userSecret: string): Promise<void> {
+  localStorage.setItem('sohappy-user-secret', userSecret);
+  return originalLogin(userSecret);
+}
+
+// Replace login function
+login = loginWithSave;

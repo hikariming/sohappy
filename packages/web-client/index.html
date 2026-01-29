@@ -13,14 +13,31 @@
         <div id="connection-status">
           <span id="cli-status" class="status disconnected">CLI: Disconnected</span>
           <span id="server-status" class="status disconnected">Server: Disconnected</span>
+          <span id="pairing-fingerprint" class="status">Pairing: --</span>
         </div>
       </header>
 
-      <div id="session-selector">
+      <div id="login-section">
+        <h2>Login</h2>
+        <div>
+          <label for="user-secret-input">Your Secret Key:</label>
+          <input type="password" id="user-secret-input" placeholder="Enter your secret key" />
+          <button id="login-btn">Login</button>
+        </div>
+      </div>
+
+      <div id="sessions-list" style="display: none;">
+        <h2>Your Sessions</h2>
+        <div id="sessions-container"></div>
+        <button id="logout-btn">Logout</button>
+      </div>
+
+      <div id="session-selector" style="display: none;">
         <label for="session-input">Session ID:</label>
-        <input type="text" id="session-input" placeholder="Enter tmux session name" />
+        <input type="text" id="session-input" placeholder="Enter session name" readonly />
         <input type="text" id="nickname-input" placeholder="Your nickname (optional)" />
         <button id="connect-btn">Connect</button>
+        <button id="back-btn">Back to Sessions</button>
       </div>
 
       <div id="control-bar">

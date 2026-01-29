@@ -4,22 +4,35 @@ import { EncryptedWSClient } from './ws/index.js';
 import chalk from 'chalk';
 import qrcode from 'qrcode-terminal';
 
-const SERVER_URL = process.env.SOHAPPY_SERVER_URL ?? 'http://localhost:3000';
+const SERVER_URL = process.env.SOHAPPY_SERVER_URL ?? 'http://localhost:3010';
 const SESSION_NAME = process.argv[2] ?? '';
 const ENCRYPTED = !process.argv.includes('--no-encrypt');
+
+// Parse userSecret from command line
+function getUserSecret(): string | undefined {
+  const secretIdx = process.argv.indexOf('--secret');
+  if (secretIdx !== -1 && process.argv[secretIdx + 1]) {
+    return process.argv[secretIdx + 1];
+  }
+  return process.env.SOHAPPY_USER_SECRET;
+}
+
+const USER_SECRET = getUserSecret();
 
 function printUsage(): void {
   console.log(`
 ${chalk.bold('sohappy')} - Tmux terminal bridge with E2E encryption
 
 ${chalk.bold('Usage:')}
-  sohappy <tmux-session-name>   Attach to existing tmux session (encrypted)
-  sohappy <session> --no-encrypt  Run without encryption
-  sohappy --list                List available tmux sessions
-  sohappy --create <name>       Create new tmux session
+  sohappy <tmux-session-name>           Attach to existing tmux session (encrypted)
+  sohappy <session> --no-encrypt        Run without encryption
+  sohappy <session> --secret <key>      Use user secret for session ownership
+  sohappy --list                        List available tmux sessions
+  sohappy --create <name>               Create new tmux session
 
 ${chalk.bold('Environment:')}
-  SOHAPPY_SERVER_URL  Server URL (default: http://localhost:3000)
+  SOHAPPY_SERVER_URL   Server URL (default: http://localhost:3000)
+  SOHAPPY_USER_SECRET  User secret key for session ownership
 `);
 }
 
@@ -65,7 +78,11 @@ async function main(): Promise<void> {
   console.log(chalk.bold(`\n🎯 sohappy CLI`));
   console.log(`Session:   ${chalk.cyan(SESSION_NAME)}`);
   console.log(`Server:    ${chalk.cyan(SERVER_URL)}`);
-  console.log(`Encrypted: ${ENCRYPTED ? chalk.green('Yes 🔒') : chalk.yellow('No')}\n`);
+  console.log(`Encrypted: ${ENCRYPTED ? chalk.green('Yes 🔒') : chalk.yellow('No')}`);
+  if (USER_SECRET) {
+    console.log(`User Auth: ${chalk.green('Enabled 🔑')}`);
+  }
+  console.log();
 
   // Initialize tmux capture
   const capture = new TmuxCapture({
@@ -77,6 +94,7 @@ async function main(): Promise<void> {
   const wsClient = new EncryptedWSClient({
     serverUrl: SERVER_URL,
     sessionId: SESSION_NAME,
+    userSecret: USER_SECRET,
     onConnect: () => {
       console.log(chalk.green('✓ Connected to server'));
 
@@ -88,7 +106,8 @@ async function main(): Promise<void> {
         console.log(chalk.dim(`Public Key: ${pairingData.publicKey.substring(0, 20)}...`));
 
         // Generate QR code for pairing
-        const pairingUrl = `${SERVER_URL}/?session=${encodeURIComponent(SESSION_NAME)}`;
+        const pairingCode = wsClient.getPairingCode();
+        const pairingUrl = `${SERVER_URL}/?session=${encodeURIComponent(SESSION_NAME)}&pairing=${encodeURIComponent(pairingCode)}`;
         console.log(chalk.bold('\n🔗 Connect URL:'));
         console.log(chalk.cyan(pairingUrl));
         console.log(chalk.bold('\n📷 Or scan QR code:'));

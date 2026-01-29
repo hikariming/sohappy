@@ -5,11 +5,12 @@ import { Server as SocketIO } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
+import { createHash } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PORT = parseInt(process.env.PORT ?? '3000', 10);
+const PORT = parseInt(process.env.PORT ?? '3010', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
 
 // Control lock timeout (ms) - auto-release if no input for this duration
@@ -49,6 +50,7 @@ interface ControlLock {
 
 interface Session {
   id: string;
+  userId: string | null; // User who owns this session
   cliSocketId: string | null;
   cliPublicKey: string | null;
   viewers: Map<string, Viewer>;
@@ -57,10 +59,19 @@ interface Session {
   encryptedHistory: EncryptedOutputEvent[];
   encrypted: boolean;
   controlLock: ControlLock | null;
+  createdAt: number;
 }
 
 // Session storage (in-memory for MVP)
 const sessions = new Map<string, Session>();
+
+// User to sessions mapping
+const userSessions = new Map<string, Set<string>>();
+
+// Helper function to derive userId from user secret
+function deriveUserId(userSecret: string): string {
+  return createHash('sha256').update(userSecret).digest('hex');
+}
 
 function broadcastControlStatus(io: SocketIO, sessionId: string, session: Session): void {
   const status = session.controlLock
@@ -142,12 +153,45 @@ async function main(): Promise<void> {
     };
   });
 
+  // Get user's sessions by userSecret
+  app.post('/api/user/sessions', async (request) => {
+    const { userSecret } = request.body as { userSecret?: string };
+
+    if (!userSecret) {
+      return { error: 'userSecret is required' };
+    }
+
+    const userId = deriveUserId(userSecret);
+    const sessionIds = userSessions.get(userId) || new Set();
+
+    const userSessionsList = Array.from(sessionIds)
+      .map(id => sessions.get(id))
+      .filter((session): session is Session => !!session)
+      .map(session => ({
+        id: session.id,
+        hasCliConnected: !!session.cliSocketId,
+        viewerCount: session.viewers.size,
+        lastOutputSeq: session.lastOutput?.seq ?? 0,
+        encrypted: session.encrypted,
+        controlLocked: !!session.controlLock,
+        controlHolder: session.controlLock?.holderNickname ?? null,
+        createdAt: session.createdAt,
+      }))
+      .sort((a, b) => b.createdAt - a.createdAt); // 最新的在前
+
+    return {
+      userId,
+      sessions: userSessionsList,
+    };
+  });
+
   // Socket.IO connection handling
   io.on('connection', (socket) => {
     const sessionId = socket.handshake.query.sessionId as string;
     const clientType = socket.handshake.query.clientType as 'cli' | 'viewer';
     const publicKey = socket.handshake.query.publicKey as string | undefined;
     const nickname = socket.handshake.query.nickname as string | undefined;
+    const userSecret = socket.handshake.query.userSecret as string | undefined;
 
     if (!sessionId) {
       console.log('Connection rejected: no sessionId');
@@ -157,10 +201,14 @@ async function main(): Promise<void> {
 
     console.log(`Client connected: ${clientType} (${socket.id}) for session: ${sessionId}`);
 
+    // Derive userId if userSecret provided
+    const userId = userSecret ? deriveUserId(userSecret) : null;
+
     let session = sessions.get(sessionId);
     if (!session) {
       session = {
         id: sessionId,
+        userId: clientType === 'cli' ? userId : null, // Only CLI can own sessions
         cliSocketId: null,
         cliPublicKey: null,
         viewers: new Map(),
@@ -169,8 +217,17 @@ async function main(): Promise<void> {
         encryptedHistory: [],
         encrypted: false,
         controlLock: null,
+        createdAt: Date.now(),
       };
       sessions.set(sessionId, session);
+
+      // Add to user's session list
+      if (clientType === 'cli' && userId) {
+        if (!userSessions.has(userId)) {
+          userSessions.set(userId, new Set());
+        }
+        userSessions.get(userId)!.add(sessionId);
+      }
     }
 
     socket.join(`session:${sessionId}`);

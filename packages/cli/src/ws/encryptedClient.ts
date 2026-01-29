@@ -18,6 +18,7 @@ import type { OutputEvent } from '../tmux/index.js';
 export interface EncryptedWSClientOptions {
   serverUrl: string;
   sessionId: string;
+  userSecret?: string;
   onConnect?: () => void;
   onDisconnect?: () => void;
   onError?: (error: Error) => void;
@@ -76,6 +77,7 @@ export class EncryptedWSClient {
         sessionId: this.options.sessionId,
         clientType: 'cli',
         publicKey: publicKeyToBase64(this.keyPair.publicKey),
+        userSecret: this.options.userSecret,
       },
       transports: ['websocket'],
       reconnection: true,
@@ -178,13 +180,16 @@ export class EncryptedWSClient {
     // This allows new viewers to get history (encrypted)
     if (this.sharedSecrets.size > 0) {
       // Use first viewer's encryption for history storage
-      const [firstViewerId, firstSecret] = this.sharedSecrets.entries().next().value;
-      const encrypted = encrypt(JSON.stringify(event), firstSecret);
-      this.socket.emit('output-history', {
-        encrypted,
-        seq: event.seq,
-        timestamp: event.timestamp,
-      });
+      const firstEntry = this.sharedSecrets.entries().next().value;
+      if (firstEntry) {
+        const [firstViewerId, firstSecret] = firstEntry;
+        const encrypted = encrypt(JSON.stringify(event), firstSecret);
+        this.socket.emit('output-history', {
+          encrypted,
+          seq: event.seq,
+          timestamp: event.timestamp,
+        });
+      }
     }
   }
 
