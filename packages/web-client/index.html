@@ -1,73 +1,96 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>sohappy - Terminal Viewer</title>
-    <link rel="stylesheet" href="/src/styles.css" />
-  </head>
-  <body>
-    <div id="app">
-      <header>
-        <h1>sohappy</h1>
-        <div id="connection-status">
-          <span id="cli-status" class="status disconnected">CLI: Disconnected</span>
-          <span id="server-status" class="status disconnected">Server: Disconnected</span>
-          <span id="pairing-fingerprint" class="status">Pairing: --</span>
-        </div>
-      </header>
 
-      <div id="login-section">
-        <h2>Login</h2>
-        <div>
-          <label for="user-secret-input">Your Secret Key:</label>
-          <input type="password" id="user-secret-input" placeholder="Enter your secret key" />
-          <button id="login-btn">Login</button>
-        </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>sohappy - Terminal Viewer</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+
+<body>
+  <div id="app">
+    <header>
+      <h1>sohappy</h1>
+      <div id="connection-status">
+        <span id="cli-status" class="status disconnected">CLI: Disconnected</span>
+        <span id="server-status" class="status disconnected">Server: Disconnected</span>
+        <span id="pairing-fingerprint" class="status">Pairing: --</span>
       </div>
+    </header>
 
-      <div id="sessions-list" style="display: none;">
-        <h2>Your Sessions</h2>
-        <div id="sessions-container"></div>
-        <button id="logout-btn">Logout</button>
+    <div id="login-section">
+      <h2>Login</h2>
+      <div>
+        <label for="user-secret-input">Your Secret Key:</label>
+        <input type="password" id="user-secret-input" placeholder="Enter your secret key" />
+        <button id="login-btn">Login</button>
       </div>
-
-      <div id="session-selector" style="display: none;">
-        <label for="session-input">Session ID:</label>
-        <input type="text" id="session-input" placeholder="Enter session name" readonly />
-        <input type="text" id="nickname-input" placeholder="Your nickname (optional)" />
-        <button id="connect-btn">Connect</button>
-        <button id="back-btn">Back to Sessions</button>
-      </div>
-
-      <div id="control-bar">
-        <div id="control-status">
-          <span id="control-indicator">🔓 No controller</span>
-        </div>
-        <button id="request-control-btn" disabled>Request Control</button>
-        <button id="release-control-btn" disabled style="display: none;">Release Control</button>
-      </div>
-
-      <div id="terminal-container"></div>
-
-      <div id="input-bar">
-        <input type="text" id="input-field" placeholder="Type here and press Enter to send..." disabled />
-        <div id="special-keys">
-          <button class="key-btn" data-key="Enter">Enter</button>
-          <button class="key-btn" data-key="C-c">Ctrl+C</button>
-          <button class="key-btn" data-key="C-d">Ctrl+D</button>
-          <button class="key-btn" data-key="Tab">Tab</button>
-          <button class="key-btn" data-key="Escape">Esc</button>
-          <button class="key-btn" data-key="Up">↑</button>
-          <button class="key-btn" data-key="Down">↓</button>
-        </div>
-      </div>
-
-      <footer>
-        <span id="seq-counter">Seq: 0</span>
-        <span id="latency">Latency: --</span>
-      </footer>
     </div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+
+    <div id="sessions-list" style="display: none;">
+      <h2>Your Sessions</h2>
+      <div id="daemon-controls" style="margin-bottom: 16px;">
+        <button id="refresh-tmux-btn">🔄 Refresh tmux Sessions</button>
+        <button id="create-session-btn">➕ Create New Session</button>
+      </div>
+      <div id="tmux-sessions-container" style="display: none; margin-bottom: 16px;">
+        <h3>Available tmux Sessions (from Daemon)</h3>
+        <div id="tmux-sessions-list"></div>
+      </div>
+      <div id="sessions-container"></div>
+      <button id="logout-btn">Logout</button>
+    </div>
+
+    <!-- Create Session Modal -->
+    <div id="create-session-modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Create New tmux Session</h3>
+        <input type="text" id="new-session-name" placeholder="Session name" />
+        <div class="modal-buttons">
+          <button id="confirm-create-btn">Create</button>
+          <button id="cancel-create-btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="session-selector" style="display: none;">
+      <label for="session-input">Session ID:</label>
+      <input type="text" id="session-input" placeholder="Enter session name" readonly />
+      <input type="text" id="nickname-input" placeholder="Your nickname (optional)" />
+      <button id="connect-btn">Connect</button>
+      <button id="back-btn">Back to Sessions</button>
+    </div>
+
+    <div id="control-bar">
+      <div id="control-status">
+        <span id="control-indicator">🔓 No controller</span>
+      </div>
+      <button id="request-control-btn" disabled>Request Control</button>
+      <button id="release-control-btn" disabled style="display: none;">Release Control</button>
+    </div>
+
+    <div id="terminal-container"></div>
+
+    <div id="input-bar">
+      <input type="text" id="input-field" placeholder="Type here and press Enter to send..." disabled />
+      <div id="special-keys">
+        <button class="key-btn" data-key="Enter">Enter</button>
+        <button class="key-btn" data-key="C-c">Ctrl+C</button>
+        <button class="key-btn" data-key="C-d">Ctrl+D</button>
+        <button class="key-btn" data-key="Tab">Tab</button>
+        <button class="key-btn" data-key="Escape">Esc</button>
+        <button class="key-btn" data-key="Up">↑</button>
+        <button class="key-btn" data-key="Down">↓</button>
+      </div>
+    </div>
+
+    <footer>
+      <span id="seq-counter">Seq: 0</span>
+      <span id="latency">Latency: --</span>
+    </footer>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
 </html>

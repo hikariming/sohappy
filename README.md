@@ -91,3 +91,48 @@ npm run dev:cli      # 启动 CLI
 # 构建
 npm run build
 ```
+
+## 部署
+
+### Docker 部署服务器
+
+本项目支持使用 Docker 部署服务器端（@sohappy/server）。你需要将整个项目代码上传到服务器。
+
+**1. 构建镜像**
+```bash
+# 在项目根目录执行
+docker build -t sohappy-server -f packages/server/Dockerfile .
+```
+
+**2. 运行容器**
+```bash
+docker run -d \
+  --name sohappy-server \
+  -p 3010:3010 \
+  --restart unless-stopped \
+  sohappy-server
+```
+
+服务器将在 3010 端口启动。
+
+### 分布式部署配置
+
+如果你将 Web、Server 和 CLI 分别部署在不同机器上，请使用环境变量配置：
+
+**Server (服务器)**
+- 部署并运行 Docker 容器
+
+**Web (前端)**
+- 构建时指定服务器地址：
+```bash
+VITE_SERVER_URL=http://your-server-ip:3010 npm run build
+```
+
+**CLI (本地)**
+- 运行时指定服务器和前端地址：
+```bash
+export SOHAPPY_SERVER_URL=http://your-server-ip:3010
+export SOHAPPY_WEB_URL=http://your-web-domain.com
+
+sohappy <session-name>
+```

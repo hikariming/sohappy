@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { TmuxCapture } from './tmux/index.js';
 import { EncryptedWSClient } from './ws/index.js';
+import { DaemonManager } from './daemon.js';
 import chalk from 'chalk';
 import qrcode from 'qrcode-terminal';
 
@@ -10,6 +11,7 @@ const SERVER_URL = process.env.SOHAPPY_SERVER_URL ?? 'http://localhost:3010';
 const WEB_URL = process.env.SOHAPPY_WEB_URL ?? 'http://localhost:5200';
 const SESSION_NAME = process.argv[2] ?? '';
 const ENCRYPTED = !process.argv.includes('--no-encrypt');
+const DAEMON_MODE = process.argv.includes('--daemon');
 
 // Parse userSecret from command line
 function getUserSecret(): string | undefined {
@@ -30,6 +32,7 @@ ${chalk.bold('Usage:')}
   sohappy <tmux-session-name>           Attach to existing tmux session (encrypted)
   sohappy <session> --no-encrypt        Run without encryption
   sohappy <session> --secret <key>      Use user secret for session ownership
+  sohappy --daemon                      Run in daemon mode (multi-session support)
   sohappy --list                        List available tmux sessions
   sohappy --create <name>               Create new tmux session
 
@@ -41,6 +44,44 @@ ${chalk.bold('Environment:')}
 }
 
 async function main(): Promise<void> {
+  // Handle --daemon flag (multi-session mode)
+  if (DAEMON_MODE) {
+    console.log(chalk.bold(`\n🎯 sohappy CLI - Daemon Mode`));
+    console.log(`Server:    ${chalk.cyan(SERVER_URL)}`);
+    if (USER_SECRET) {
+      console.log(`User Auth: ${chalk.green('Enabled 🔑')}`);
+    }
+    console.log();
+
+    const daemon = new DaemonManager({
+      serverUrl: SERVER_URL,
+      userSecret: USER_SECRET,
+      onConnect: () => {
+        console.log(chalk.green('\n✓ Daemon connected and ready'));
+        console.log(chalk.dim('Waiting for commands from Web client...\n'));
+      },
+      onDisconnect: () => {
+        console.log(chalk.yellow('⚠ Daemon disconnected'));
+      },
+      onError: (error) => {
+        console.error(chalk.red(`Connection error: ${error.message}`));
+      },
+    });
+
+    daemon.connect();
+
+    // Handle graceful shutdown
+    const shutdown = (): void => {
+      console.log(chalk.yellow('\nShutting down daemon...'));
+      daemon.disconnect();
+      process.exit(0);
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    return;
+  }
+
   // Handle --list flag
   if (process.argv.includes('--list')) {
     const sessions = TmuxCapture.listSessions();

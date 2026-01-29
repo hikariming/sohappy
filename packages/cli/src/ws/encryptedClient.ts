@@ -103,11 +103,24 @@ export class EncryptedWSClient {
 
     // Handle viewer key exchange
     this.socket.on('viewer-joined', (data: { viewerId: string; publicKey: string }) => {
-      console.log(`Viewer joined: ${data.viewerId}`);
-      const viewerPublicKey = publicKeyFromBase64(data.publicKey);
-      const sharedSecret = computeSharedSecret(this.keyPair.secretKey, viewerPublicKey);
-      this.sharedSecrets.set(data.viewerId, sharedSecret);
-      this.options.onPaired?.(data.viewerId);
+      console.log(`Viewer joined: ${data.viewerId} with key length: ${data.publicKey?.length}`);
+      if (!data.publicKey) {
+        console.error('Missing public key from viewer');
+        return;
+      }
+
+      let sharedSecret: Uint8Array;
+
+      try {
+        const viewerPublicKey = publicKeyFromBase64(data.publicKey);
+        sharedSecret = computeSharedSecret(this.keyPair.secretKey, viewerPublicKey);
+        this.sharedSecrets.set(data.viewerId, sharedSecret);
+        console.log(`Computed shared secret for ${data.viewerId}, secrets count: ${this.sharedSecrets.size}`);
+        this.options.onPaired?.(data.viewerId);
+      } catch (e) {
+        console.error('Failed to compute shared secret:', e);
+        return;
+      }
 
       // Immediately send current terminal state to new viewer if we have it
       if (this.lastOutputEvent) {

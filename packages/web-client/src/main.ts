@@ -66,6 +66,16 @@ const controlIndicator = document.getElementById('control-indicator') as HTMLSpa
 const requestControlBtn = document.getElementById('request-control-btn') as HTMLButtonElement;
 const releaseControlBtn = document.getElementById('release-control-btn') as HTMLButtonElement;
 
+// Daemon controls
+const refreshTmuxBtn = document.getElementById('refresh-tmux-btn') as HTMLButtonElement;
+const createSessionBtn = document.getElementById('create-session-btn') as HTMLButtonElement;
+const tmuxSessionsContainer = document.getElementById('tmux-sessions-container') as HTMLDivElement;
+const tmuxSessionsList = document.getElementById('tmux-sessions-list') as HTMLDivElement;
+const createSessionModal = document.getElementById('create-session-modal') as HTMLDivElement;
+const newSessionNameInput = document.getElementById('new-session-name') as HTMLInputElement;
+const confirmCreateBtn = document.getElementById('confirm-create-btn') as HTMLButtonElement;
+const cancelCreateBtn = document.getElementById('cancel-create-btn') as HTMLButtonElement;
+
 // State
 let socket: Socket | null = null;
 let terminal: Terminal | null = null;
@@ -167,6 +177,9 @@ function displaySessions(sessions: SessionInfo[]): void {
       }
     });
   });
+
+  // Refresh daemon sessions
+  void refreshTmuxSessions();
 }
 
 // Select a session to join
@@ -606,17 +619,183 @@ specialKeys.forEach((btn) => {
   });
 });
 
-requestControlBtn.addEventListener('click', () => {
-  if (socket?.connected) {
-    socket.emit('request-control');
+// Daemon connection logic
+let daemonCheckInterval: number | null = null;
+
+async function refreshTmuxSessions(): Promise<void> {
+  const refreshBtn = document.getElementById('refresh-tmux-btn') as HTMLButtonElement;
+  refreshBtn.disabled = true;
+  refreshBtn.textContent = 'Refreshing...';
+
+  try {
+    const response = await fetch(`${SERVER_URL}/api/daemon/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'list-sessions' }),
+    });
+
+    const result = await response.json();
+    if (result.success && result.data) {
+      displayTmuxSessions(result.data.sessions);
+    } else {
+      console.error('Failed to list sessions:', result.error);
+      tmuxSessionsContainer.style.display = 'none';
+    }
+  } catch (e) {
+    console.error('Network error listing sessions:', e);
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = '🔄 Refresh tmux Sessions';
   }
+}
+
+function displayTmuxSessions(sessions: Array<{ name: string; attached: boolean; viewerCount: number }>): void {
+  if (sessions.length === 0) {
+    tmuxSessionsContainer.style.display = 'none';
+    return;
+  }
+
+  tmuxSessionsContainer.style.display = 'block';
+  tmuxSessionsList.innerHTML = '';
+
+  sessions.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'session-item';
+    el.innerHTML = `
+      <div class="session-info">
+        <strong>${s.name}</strong>
+        <span class="${s.attached ? 'connected' : 'disconnected'}">
+          ${s.attached ? '🟢 Running' : '⚪ Idle'}
+        </span>
+        <span>${s.viewerCount} viewers</span>
+      </div>
+      <div class="session-actions">
+        ${s.attached
+        ? `<button class="join-session-btn" data-session-id="${s.name}">Join</button>
+             <button class="detach-session-btn" data-session-id="${s.name}">Stop</button>`
+        : `<button class="attach-session-btn" data-session-id="${s.name}">Start & Join</button>`}
+      </div>
+    `;
+    tmuxSessionsList.appendChild(el);
+  });
+
+  // Re-bind buttons inside the list
+  document.querySelectorAll('.join-session-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = (e.target as HTMLButtonElement).dataset.sessionId;
+      if (id) selectSession(id);
+    });
+  });
+
+  document.querySelectorAll('.attach-session-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = (e.target as HTMLButtonElement).dataset.sessionId;
+      if (!id) return;
+
+      try {
+        await fetch(`${SERVER_URL}/api/daemon/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: 'attach-session', params: { name: id } }),
+        });
+        setTimeout(refreshTmuxSessions, 500); // Refresh after short delay
+        selectSession(id);
+      } catch (err) {
+        alert('Failed to attach session');
+      }
+    });
+  });
+
+  document.querySelectorAll('.detach-session-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = (e.target as HTMLButtonElement).dataset.sessionId;
+      if (!id) return;
+
+      if (!confirm(`Are you sure you want to stop session "${id}"? Viewers will be disconnected.`)) return;
+
+      try {
+        await fetch(`${SERVER_URL}/api/daemon/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: 'detach-session', params: { name: id } }),
+        });
+        setTimeout(refreshTmuxSessions, 500);
+      } catch (err) {
+        alert('Failed to detach session');
+      }
+    });
+  });
+}
+
+async function createNewSession(name: string): Promise<void> {
+  if (!name) return;
+
+  try {
+    const response = await fetch(`${SERVER_URL}/api/daemon/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'create-session', params: { name } }),
+    });
+
+    const result = await response.json();
+    if (result.success) {
+      createSessionModal.style.display = 'none';
+      newSessionNameInput.value = '';
+
+      // Immediately try to attach
+      await fetch(`${SERVER_URL}/api/daemon/command`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'attach-session', params: { name } }),
+      });
+
+      setTimeout(refreshTmuxSessions, 500);
+      selectSession(name);
+    } else {
+      alert(`Error creating session: ${result.error}`);
+    }
+  } catch (e) {
+    alert('Failed to create session');
+  }
+}
+
+// Event Listeners for Daemon Controls
+refreshTmuxBtn.addEventListener('click', refreshTmuxSessions);
+
+createSessionBtn.addEventListener('click', () => {
+  createSessionModal.style.display = 'flex';
+  newSessionNameInput.focus();
 });
 
-releaseControlBtn.addEventListener('click', () => {
-  if (socket?.connected) {
-    socket.emit('release-control');
-  }
+cancelCreateBtn.addEventListener('click', () => {
+  createSessionModal.style.display = 'none';
 });
+
+confirmCreateBtn.addEventListener('click', () => {
+  createNewSession(newSessionNameInput.value.trim());
+});
+
+newSessionNameInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') confirmCreateBtn.click();
+});
+
+
+
+// Check for stored userSecret (optional - for convenience)
+const storedSecret = localStorage.getItem('sohappy-user-secret');
+if (storedSecret) {
+  userSecretInput.value = storedSecret;
+}
+
+// Save userSecret on login (optional)
+const originalLogin = login;
+async function loginWithSave(userSecret: string): Promise<void> {
+  localStorage.setItem('sohappy-user-secret', userSecret);
+  return originalLogin(userSecret);
+}
+
+// Replace login function
+login = loginWithSave;
 
 // Initialize
 initTerminal();
@@ -656,19 +835,3 @@ if (pairingParam) {
 
 // Hide terminal initially
 terminalContainer.style.display = 'none';
-
-// Check for stored userSecret (optional - for convenience)
-const storedSecret = localStorage.getItem('sohappy-user-secret');
-if (storedSecret) {
-  userSecretInput.value = storedSecret;
-}
-
-// Save userSecret on login (optional)
-const originalLogin = login;
-async function loginWithSave(userSecret: string): Promise<void> {
-  localStorage.setItem('sohappy-user-secret', userSecret);
-  return originalLogin(userSecret);
-}
-
-// Replace login function
-login = loginWithSave;
