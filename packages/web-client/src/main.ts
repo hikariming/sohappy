@@ -632,6 +632,9 @@ if (pairingParam) {
     if (parsed.sessionId && parsed.publicKey && parsed.timestamp) {
       pairingCode = parsed;
       sessionInput.value = parsed.sessionId;
+      // 隐藏登录区域，直接显示连接界面
+      loginSection.style.display = 'none';
+      sessionsList.style.display = 'none';
       sessionSelector.style.display = 'block';
       void fingerprintFromBase64(parsed.publicKey).then((fp) => {
         pairingFingerprint = fp;
@@ -645,6 +648,9 @@ if (pairingParam) {
   }
 } else if (sessionParam) {
   sessionInput.value = sessionParam;
+  // 隐藏登录区域，直接显示连接界面
+  loginSection.style.display = 'none';
+  sessionsList.style.display = 'none';
   sessionSelector.style.display = 'block';
 }
 

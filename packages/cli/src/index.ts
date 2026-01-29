@@ -4,7 +4,10 @@ import { EncryptedWSClient } from './ws/index.js';
 import chalk from 'chalk';
 import qrcode from 'qrcode-terminal';
 
+// 后端 API 服务器地址
 const SERVER_URL = process.env.SOHAPPY_SERVER_URL ?? 'http://localhost:3010';
+// 前端 Web 客户端地址
+const WEB_URL = process.env.SOHAPPY_WEB_URL ?? 'http://localhost:5200';
 const SESSION_NAME = process.argv[2] ?? '';
 const ENCRYPTED = !process.argv.includes('--no-encrypt');
 
@@ -31,7 +34,8 @@ ${chalk.bold('Usage:')}
   sohappy --create <name>               Create new tmux session
 
 ${chalk.bold('Environment:')}
-  SOHAPPY_SERVER_URL   Server URL (default: http://localhost:3000)
+  SOHAPPY_SERVER_URL   Server URL (default: http://localhost:3010)
+  SOHAPPY_WEB_URL      Web client URL (default: http://localhost:5200)
   SOHAPPY_USER_SECRET  User secret key for session ownership
 `);
 }
@@ -107,7 +111,7 @@ async function main(): Promise<void> {
 
         // Generate QR code for pairing
         const pairingCode = wsClient.getPairingCode();
-        const pairingUrl = `${SERVER_URL}/?session=${encodeURIComponent(SESSION_NAME)}&pairing=${encodeURIComponent(pairingCode)}`;
+        const pairingUrl = `${WEB_URL}/?session=${encodeURIComponent(SESSION_NAME)}&pairing=${encodeURIComponent(pairingCode)}`;
         console.log(chalk.bold('\n🔗 Connect URL:'));
         console.log(chalk.cyan(pairingUrl));
         console.log(chalk.bold('\n📷 Or scan QR code:'));

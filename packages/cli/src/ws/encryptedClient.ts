@@ -146,7 +146,7 @@ export class EncryptedWSClient {
       try {
         const input = JSON.parse(decrypted);
         // Emit decrypted input event
-        this.socket?.emit('_decrypted-input', input);
+        this.inputHandler?.(input);
       } catch {
         console.warn('Failed to parse decrypted input');
       }
@@ -193,11 +193,13 @@ export class EncryptedWSClient {
     }
   }
 
+  private inputHandler: ((data: { keys: string; type: 'text' | 'special' }) => void) | null = null;
+
   /**
    * Register handler for decrypted input
    */
   onDecryptedInput(handler: (data: { keys: string; type: 'text' | 'special' }) => void): void {
-    this.socket?.on('_decrypted-input', handler);
+    this.inputHandler = handler;
   }
 
   /**
